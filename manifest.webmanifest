@@ -1,0 +1,17 @@
+{
+  "name": "Шахматы с приколами",
+  "short_name": "Шахматы+",
+  "description": "Шахматы с рулеткой способностей, минами и акулами",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#302e2b",
+  "theme_color": "#262421",
+  "lang": "ru",
+  "icons": [
+    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}
