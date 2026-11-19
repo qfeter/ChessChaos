@@ -1,4 +1,4 @@
-const C = 'fchess-v3';
+const C = 'fchess-v4';
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(C).then(c => c.addAll(['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'])).catch(() => {}));
   self.skipWaiting();
