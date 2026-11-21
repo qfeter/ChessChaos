@@ -1,5 +1,5 @@
 -- ============================================================================
---  ШАХМАТЫ · РУЛЕТКА — база данных, версия 2
+--  ШАХМАТЫ · РУЛЕТКА — база данных, версия 6 (трофеи, лидеры, профили игроков)
 --  Запусти ВЕСЬ файл один раз: Supabase -> SQL Editor -> New query -> вставить -> Run.
 --  Ничего не удаляет (кроме старых лишних правил доступа), можно запускать повторно.
 --  Если в проекте уже стояла версия 1, она обновится на месте: монеты и покупки сохранятся.
@@ -22,6 +22,7 @@ alter table public.profiles add column if not exists wins       integer not null
 alter table public.profiles add column if not exists losses     integer not null default 0;
 alter table public.profiles add column if not exists draws      integer not null default 0;
 alter table public.profiles add column if not exists games      integer not null default 0;
+alter table public.profiles add column if not exists trophies   integer not null default 0 check (trophies >= 0);
 alter table public.profiles add column if not exists last_seen  timestamptz;
 alter table public.profiles add column if not exists last_claim timestamptz;
 alter table public.profiles add column if not exists day        date;
@@ -98,10 +99,10 @@ insert into public.shop_items (id, kind, name, descr, price, sort) values
 ('magic', 'ability', 'Фокус-покус', 'Случайная пешка врага исчезает в шляпе фокусника.', 150, 250),
 ('draft', 'ability', 'Сквозняк', 'Случайная фигура врага (не король) простужается и стоит 2 его хода.', 100, 200),
 ('jackpot', 'ability', 'Халява', 'Сразу получаешь ещё одну способность из рулетки.', 250, 350),
-('clown', 'ability', 'Клоун-обмен', 'Твой ферзь и ферзь врага меняются местами.', 200, 300),
+('clown', 'ability', 'Клоун-обмен', 'Монетка 50/50: твой ферзь и ферзь врага меняются местами (или остаются на местах).', 200, 300),
 ('mirror', 'ability', 'Зеркало', 'Получаешь копию последней способности, которую использовал враг (кроме Зеркала).', 350, 450),
-('pirate', 'ability', 'Пират', 'Крадёшь случайную способность из запаса врага.', 450, 550),
-('dynamite', 'ability', 'Динамит', 'Нажми любую клетку доски. Из всех фигур в радиусе 3 клеток (кроме королей) взорвутся 2 случайные. Свои тоже могут пострадать.', 650, 750),
+('pirate', 'ability', 'Пират', 'Монетка 50/50: крадёшь случайную способность из запаса врага (или промахиваешься).', 450, 550),
+('dynamite', 'ability', 'Динамит', 'Нажми любую клетку: взрыв накроет квадрат 3×3 вокруг неё. Из фигур в этом квадрате (кроме королей) сгорят 2 случайные. Свои тоже могут пострадать.', 650, 750),
 ('pg', 'queen', 'Пегас', 'Вместо ферзя. Пегас ходит как слон и конь.', 200, 300),
 ('ce', 'queen', 'Кентавр', 'Вместо ферзя. Кентавр ходит как ладья и конь.', 1000, 1100),
 ('gn', 'queen', 'Генерал', 'Вместо ферзя. Генерал ходит как король и конь.', 1250, 1350),
@@ -122,6 +123,7 @@ create table if not exists public.games (
   coins      integer not null default 0,
   hist       jsonb
 );
+alter table public.games add column if not exists trophies integer not null default 0;
 create index if not exists games_user_idx on public.games (user_id, created_at desc);
 alter table public.games enable row level security;
 revoke all on public.games from anon, authenticated;
@@ -161,7 +163,7 @@ revoke all on public.lobby from anon, authenticated;
 create or replace function public.pub_profile(r public.profiles) returns jsonb
 language sql immutable as $$
   select jsonb_build_object('nick', r.nick, 'coins', r.coins, 'owned', to_jsonb(r.owned), 'equip', r.equip, 'equip_q', r.equip_q, 'skin', r.skin,
-    'xp', r.xp, 'wins', r.wins, 'losses', r.losses, 'draws', r.draws, 'games', r.games);
+    'xp', r.xp, 'wins', r.wins, 'losses', r.losses, 'draws', r.draws, 'games', r.games, 'trophies', r.trophies);
 $$;
 
 create or replace function public.ensure_profile(p_nick text) returns jsonb
@@ -220,7 +222,7 @@ end $$;
 create or replace function public.claim_game(p_result text, p_mode text, p_level int, p_minutes int, p_moves int, p_lost int, p_opp text, p_hist jsonb)
 returns jsonb
 language plpgsql security definer set search_path = public as $$
-declare r public.profiles; base int := 0; total int := 0; xpv int; award int; capped boolean; dc int; limited boolean;
+declare r public.profiles; base int := 0; total int := 0; xpv int; award int; capped boolean; dc int; limited boolean; tdelta int := 0; told int;
 begin
   if auth.uid() is null then raise exception 'not authenticated'; end if;
   if p_result not in ('win','loss','draw') or p_mode not in ('bot','online') then raise exception 'bad args'; end if;
@@ -231,6 +233,7 @@ begin
   if p_hist is not null and length(p_hist::text) > 150000 then p_hist := null; end if;
   select * into r from public.profiles where user_id = auth.uid() for update;
   if not found then raise exception 'Нет профиля'; end if;
+  told := r.trophies;
 
   if p_result = 'win' then
     if p_moves < 6 then base := 3;
@@ -260,6 +263,18 @@ begin
   if p_mode = 'bot' then xpv := round(xpv / 2.0)::int; end if;
   if limited then xpv := 0; end if;
 
+  -- Трофеи (только бои с людьми). Победа: 8..14 (быстрее и чище = больше), поражение: -7..-10 (долго держался и мало потерял = меньше), ничья 0.
+  -- Одна победа + одно поражение дают небольшой плюс (в среднем +2..+4), общий счёт ниже 0 не уходит.
+  if p_mode = 'online' and not limited and p_moves >= 6 then
+    if p_result = 'win' then
+      tdelta := 8 + case when p_moves <= 18 then 3 when p_moves <= 28 then 2 when p_moves <= 40 then 1 else 0 end
+                  + case when p_lost = 0 then 3 when p_lost <= 3 then 2 when p_lost <= 8 then 1 else 0 end;
+    elsif p_result = 'loss' then
+      tdelta := -(10 - case when p_moves >= 40 then 2 when p_moves >= 25 then 1 else 0 end
+                     - case when p_lost <= 3 then 1 else 0 end);
+    end if;
+  end if;
+
   if p_mode = 'bot' then
     -- бои с ботами не идут в статистику, опыт и историю: только монеты
     update public.profiles set coins = coins + award, last_claim = now(), day = current_date, day_coins = dc + award
@@ -268,23 +283,25 @@ begin
   end if;
 
   update public.profiles set
+    trophies = greatest(0, trophies + tdelta),
     coins = coins + award, xp = xp + xpv, games = games + 1,
     wins = wins + (p_result = 'win')::int, losses = losses + (p_result = 'loss')::int, draws = draws + (p_result = 'draw')::int,
     last_claim = now(), day = current_date, day_coins = dc + award
   where user_id = auth.uid() returning * into r;
 
-  insert into public.games (user_id, result, mode, level, minutes, moves, opp, coins, hist)
-    values (auth.uid(), p_result, p_mode, p_level, p_minutes, p_moves, left(coalesce(p_opp, ''), 30), award, p_hist);
+  tdelta := r.trophies - told; -- реально применённое изменение (с учётом нижней границы 0)
+  insert into public.games (user_id, result, mode, level, minutes, moves, opp, coins, hist, trophies)
+    values (auth.uid(), p_result, p_mode, p_level, p_minutes, p_moves, left(coalesce(p_opp, ''), 30), award, p_hist, tdelta);
   delete from public.games where user_id = auth.uid()
     and id not in (select id from public.games where user_id = auth.uid() order by created_at desc limit 30);
 
-  return public.pub_profile(r) || jsonb_build_object('awarded', award, 'capped', capped);
+  return public.pub_profile(r) || jsonb_build_object('awarded', award, 'capped', capped, 'trophy_delta', tdelta);
 end $$;
 
 create or replace function public.games_list() returns jsonb
 language sql stable security definer set search_path = public as $$
   select coalesce(jsonb_agg(jsonb_build_object('id', g.id, 'created_at', g.created_at, 'result', g.result, 'mode', g.mode,
-    'opp', g.opp, 'minutes', g.minutes, 'moves', g.moves, 'level', g.level, 'coins', g.coins) order by g.created_at desc), '[]'::jsonb)
+    'opp', g.opp, 'minutes', g.minutes, 'moves', g.moves, 'level', g.level, 'coins', g.coins, 'trophies', g.trophies) order by g.created_at desc), '[]'::jsonb)
   from (select * from public.games where user_id = auth.uid() order by created_at desc limit 30) g;
 $$;
 
@@ -388,6 +405,41 @@ language sql stable security definer set search_path = public as $$
   join public.profiles p on p.user_id = l.user_id;
 $$;
 
+-- таблица лидеров по трофеям (только игроки, сыгравшие хотя бы одну партию с человеком)
+create or replace function public.leaderboard() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare top jsonb; me jsonb;
+begin
+  if auth.uid() is null then raise exception 'not authenticated'; end if;
+  select coalesce(jsonb_agg(jsonb_build_object('uid', t.user_id, 'nick', t.nick, 'trophies', t.trophies, 'wins', t.wins, 'games', t.games, 'skin', t.skin, 'rank', t.rk) order by t.rk), '[]'::jsonb)
+    into top from (
+      select p.*, rank() over (order by p.trophies desc, p.wins desc) as rk
+      from public.profiles p where p.games > 0 order by p.trophies desc, p.wins desc, p.created_at limit 50) t;
+  select to_jsonb(x) into me from (
+      select rk as rank, trophies from (select user_id, trophies, rank() over (order by trophies desc, wins desc) as rk from public.profiles where games > 0) q
+      where user_id = auth.uid()) x;
+  return jsonb_build_object('top', top, 'me', me);
+end $$;
+
+-- публичная карточка игрока (друга или из таблицы лидеров): без монет и покупок
+create or replace function public.player_profile(p_uid uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare r public.profiles; rk int; recent jsonb; fr text;
+begin
+  if auth.uid() is null then raise exception 'not authenticated'; end if;
+  select * into r from public.profiles where user_id = p_uid;
+  if not found then raise exception 'not found'; end if;
+  select count(*) + 1 into rk from public.profiles where games > 0 and (trophies > r.trophies or (trophies = r.trophies and wins > r.wins));
+  select coalesce(jsonb_agg(jsonb_build_object('result', g.result, 'opp', g.opp, 'moves', g.moves, 'minutes', g.minutes, 'created_at', g.created_at, 'trophies', g.trophies) order by g.created_at desc), '[]'::jsonb)
+    into recent from (select * from public.games where user_id = p_uid and mode = 'online' order by created_at desc limit 8) g;
+  select case when f.accepted then 'friend' when f.a = auth.uid() then 'outgoing' else 'incoming' end into fr
+    from public.friends f where (f.a = auth.uid() and f.b = p_uid) or (f.a = p_uid and f.b = auth.uid()) limit 1;
+  return jsonb_build_object('uid', r.user_id, 'nick', r.nick, 'xp', r.xp, 'wins', r.wins, 'losses', r.losses, 'draws', r.draws, 'games', r.games,
+    'trophies', r.trophies, 'rank', case when r.games > 0 then rk else null end, 'skin', r.skin, 'equip_q', r.equip_q,
+    'online', coalesce(r.last_seen > now() - interval '90 seconds', false), 'last_seen', r.last_seen,
+    'since', r.created_at, 'recent', recent, 'relation', fr, 'me', r.user_id = auth.uid());
+end $$;
+
 -- ---------- 7. права на вызов функций ----------
 do $$
 declare f record;
@@ -395,7 +447,7 @@ begin
   for f in
     select p.oid::regprocedure as sig, p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public' and p.proname in ('pub_profile','ensure_profile','heartbeat','shop_catalog','buy_item','claim_game','games_list','game_get',
-      'friend_request','friends_list','friend_respond','friend_remove','send_invite','my_invites','invite_done','lobby_publish','lobby_remove','lobby_list')
+      'friend_request','friends_list','friend_respond','friend_remove','send_invite','my_invites','invite_done','lobby_publish','lobby_remove','lobby_list','leaderboard','player_profile')
   loop
     execute format('revoke all on function %s from public, anon, authenticated', f.sig);
     if f.proname <> 'pub_profile' then execute format('grant execute on function %s to authenticated', f.sig); end if;
