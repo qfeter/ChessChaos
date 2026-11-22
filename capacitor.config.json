@@ -1,0 +1,8 @@
+{
+  "appId": "chesschaos.qfeter.fun",
+  "appName": "Chess Chaos",
+  "webDir": "www",
+  "backgroundColor": "#0e0c19",
+  "server": { "androidScheme": "https" },
+  "android": { "allowMixedContent": false }
+}

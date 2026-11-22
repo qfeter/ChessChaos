@@ -1,0 +1,71 @@
+name: Сборка APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'capacitor.config.json'
+      - 'package.json'
+      - 'tools/**'
+      - '.github/workflows/android.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Зависимости
+        run: |
+          npm install --no-audit --no-fund
+          pip install pillow
+
+      - name: Веб-файлы в www
+        run: |
+          mkdir -p www
+          cp index.html version.json manifest.webmanifest icon-192.png icon-512.png icon-maskable-512.png www/
+          cp -r sfx www/sfx
+
+      - name: Android-проект
+        run: |
+          npx cap add android
+          python3 tools/android_patch.py
+          npx cap sync android
+
+      - name: Постоянный ключ подписи
+        run: |
+          mkdir -p ~/.android
+          cp tools/chesschaos.keystore ~/.android/debug.keystore
+
+      - name: Сборка
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Имя файла
+        run: cp android/app/build/outputs/apk/release/app-release.apk ChessChaos.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ChessChaos-apk
+          path: ChessChaos.apk
+
+      - name: Публикация в Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: Chess Chaos APK ${{ github.run_number }}
+          files: ChessChaos.apk
+          make_latest: true

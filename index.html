@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="ru" data-board="violet">
-<head>
+<head><script>window.FC_BUILD=1795359877974;(function(){try{var c=window.Capacitor;if(!(c&&c.isNativePlatform&&c.isNativePlatform()))return;var o=JSON.parse(localStorage.getItem("fc_ota")||"null");if(!o||!o.html||!(o.v>window.FC_BUILD))return;if((o.tries||0)>=2){localStorage.removeItem("fc_ota");return;}o.tries=(o.tries||0)+1;localStorage.setItem("fc_ota",JSON.stringify(o));document.open();document.write(o.html);document.close();}catch(e){}})();</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <meta name="theme-color" content="#0f0d1a">
@@ -2203,6 +2203,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Engine; el
 /* ===== 01_core.js ===== */
 const E=window.Engine;
 const $=s=>document.querySelector(s);
+const WEB_URL='https://qfeter.github.io/ChessChaos/'; // сайт игры: ссылки-приглашения и обновления APK
+const IS_NATIVE=!!(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform());
 const $$=s=>Array.from(document.querySelectorAll(s));
 const ICONS=window.FC_ICONS||{};
 const PREFIX='fchess-';
@@ -2645,7 +2647,7 @@ function cleanNet(){
 function needPeer(){if(typeof Peer==='undefined'){toast('Не загрузилась библиотека сети. Проверь интернет и обнови страницу.',4000);return false}return true;}
 function genCode(){const a='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';let s='';for(let i=0;i<5;i++)s+=a[Math.floor(Math.random()*a.length)];return s;}
 function joinLink(code){
-  const u=location.href.split('#')[0].split('?')[0];
+  const u=IS_NATIVE?WEB_URL:location.href.split('#')[0].split('?')[0];
   return /^https?:/.test(u)?u+'?join='+code:'FCHESS:'+code;
 }
 function drawQR(code){
@@ -4139,7 +4141,7 @@ $('#mRules').addEventListener('click',e=>{if(e.target.id==='mRules')$('#mRules')
 hydrate();
 $('#hint').addEventListener('touchstart',()=>{},{passive:true});
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){AC();}});
-if('serviceWorker' in navigator&&/^https?:/.test(location.protocol)){
+if('serviceWorker' in navigator&&/^https?:/.test(location.protocol)&&!IS_NATIVE){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
 }
 // гостевой ник по умолчанию
@@ -4186,7 +4188,7 @@ function appBack(){ // true = обработали внутри приложен
   return true;
 }
 try{
-  if(/^https?:/.test(location.protocol)){
+  if(/^https?:/.test(location.protocol)&&!IS_NATIVE){
     history.replaceState({t:0},'');history.pushState({t:1},'');
     window.addEventListener('popstate',()=>{
       if(appBack())history.pushState({t:1},'');
@@ -4194,6 +4196,38 @@ try{
     });
   }
 }catch(e){}
+/* ---------- приложение (APK, Capacitor): «Назад», ссылки-приглашения, обновления без пересборки ---------- */
+if(IS_NATIVE){
+  try{
+    const A=window.Capacitor.Plugins&&window.Capacitor.Plugins.App;
+    if(A){
+      A.addListener('backButton',()=>{if(!appBack())A.exitApp();});
+      A.addListener('appUrlOpen',e=>{
+        const m=String(e&&e.url||'').match(/[?&]join=([A-Za-z0-9]{4,6})/);
+        if(m){loadSfx();joinCode(m[1].toUpperCase());}
+      });
+      A.getLaunchUrl&&A.getLaunchUrl().then(r=>{const m=String(r&&r.url||'').match(/[?&]join=([A-Za-z0-9]{4,6})/);if(m)setTimeout(()=>{loadSfx();joinCode(m[1].toUpperCase());},600);}).catch(()=>{});
+    }
+    // раз в запуск: если на сайте версия новее, качаем её и применяем (сразу, если игрок в меню)
+    try{const o=JSON.parse(localStorage.getItem('fc_ota')||'null');if(o&&o.v===window.FC_BUILD){o.tries=0;localStorage.setItem('fc_ota',JSON.stringify(o));}}catch(e){}
+    const otaCheck=async()=>{
+      try{
+        const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),6000);
+        const j=await (await fetch(WEB_URL+'version.json?'+Date.now(),{cache:'no-store',signal:ctl.signal})).json();clearTimeout(t);
+        if(!(j&&j.v>window.FC_BUILD))return;
+        const o0=JSON.parse(localStorage.getItem('fc_ota')||'null');
+        if(o0&&o0.v>=j.v)return;
+        const ctl2=new AbortController(),t2=setTimeout(()=>ctl2.abort(),30000);
+        const html=await (await fetch(WEB_URL+'index.html?'+j.v,{cache:'no-store',signal:ctl2.signal})).text();clearTimeout(t2);
+        if(html.length<100000||!html.includes('FC_BUILD='+j.v))return; // битая или неполная загрузка
+        localStorage.setItem('fc_ota',JSON.stringify({v:j.v,html:html,tries:0}));
+        const idle=()=>['home','friends','shop','profile','settings'].includes(curScreen)&&!document.querySelector('.modal.on');
+        if(idle())location.reload();else toast('Скачано обновление: применится при следующем запуске',4000);
+      }catch(e){}
+    };
+    setTimeout(otaCheck,2500);
+  }catch(e){}
+}
 window.__fc={showEye,coinFx,appBack,pushViews,showSpin,get V(){return V;},get G(){return G;},get PR(){return PR;},E,show,startBot,act,hostRoom,joinCode,render,get cinema(){return cinema;},settings,openSetup,catalog:()=>catalog,renderShop,renderProfile,renderFriends,frState:()=>frState,get curSkin(){return curSkin;},openReplay,showInvite,sfx};
 
 })();
