@@ -159,6 +159,7 @@ create table if not exists public.lobby (
 );
 alter table public.lobby add column if not exists side  text not null default 'r' check (side in ('w','b','r'));
 alter table public.lobby add column if not exists queen text not null default 'q';
+alter table public.lobby add column if not exists spin  integer not null default 10 check (spin in (0,10,15,20,30));
 alter table public.lobby enable row level security;
 revoke all on public.lobby from anon, authenticated;
 
@@ -399,14 +400,15 @@ $$;
 
 -- открытые комнаты (поиск соперника)
 drop function if exists public.lobby_publish(text, int);
-create or replace function public.lobby_publish(p_code text, p_minutes int, p_side text default 'r', p_queen text default 'q') returns boolean
+drop function if exists public.lobby_publish(text, int, text, text);
+create or replace function public.lobby_publish(p_code text, p_minutes int, p_side text default 'r', p_queen text default 'q', p_spin int default 10) returns boolean
 language plpgsql security definer set search_path = public as $$
 begin
   if auth.uid() is null then raise exception 'not authenticated'; end if;
   if p_code !~ '^[A-Z0-9]{4,6}$' then raise exception 'bad code'; end if;
-  insert into public.lobby (user_id, code, minutes, side, queen, updated_at)
-    values (auth.uid(), p_code, greatest(1, least(60, coalesce(p_minutes, 10))), case when p_side in ('w','b') then p_side else 'r' end, left(coalesce(nullif(p_queen, ''), 'q'), 12), now())
-    on conflict (user_id) do update set code = excluded.code, minutes = excluded.minutes, side = excluded.side, queen = excluded.queen, updated_at = now();
+  insert into public.lobby (user_id, code, minutes, side, queen, spin, updated_at)
+    values (auth.uid(), p_code, greatest(1, least(60, coalesce(p_minutes, 10))), case when p_side in ('w','b') then p_side else 'r' end, left(coalesce(nullif(p_queen, ''), 'q'), 12), case when p_spin in (0,10,15,20,30) then p_spin else 10 end, now())
+    on conflict (user_id) do update set code = excluded.code, minutes = excluded.minutes, side = excluded.side, queen = excluded.queen, spin = excluded.spin, updated_at = now();
   return true;
 end $$;
 
@@ -417,7 +419,7 @@ $$;
 
 create or replace function public.lobby_list() returns jsonb
 language sql stable security definer set search_path = public as $$
-  select coalesce(jsonb_agg(jsonb_build_object('code', l.code, 'minutes', l.minutes, 'side', l.side, 'queen', l.queen, 'nick', p.nick, 'nick_key', p.nick_key, 'xp', p.xp) order by l.updated_at desc), '[]'::jsonb)
+  select coalesce(jsonb_agg(jsonb_build_object('code', l.code, 'minutes', l.minutes, 'side', l.side, 'queen', l.queen, 'spin', l.spin, 'nick', p.nick, 'nick_key', p.nick_key, 'xp', p.xp) order by l.updated_at desc), '[]'::jsonb)
   from (select * from public.lobby where updated_at > now() - interval '50 seconds' and user_id <> auth.uid() order by updated_at desc limit 20) l
   join public.profiles p on p.user_id = l.user_id;
 $$;
