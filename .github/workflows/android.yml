@@ -45,11 +45,6 @@ jobs:
           python3 tools/android_patch.py
           npx cap sync android
 
-      - name: Постоянный ключ подписи
-        run: |
-          mkdir -p ~/.android
-          cp tools/chesschaos.keystore ~/.android/debug.keystore
-
       - name: Сборка
         working-directory: android
         run: ./gradlew assembleRelease --no-daemon

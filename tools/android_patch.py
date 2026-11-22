@@ -34,8 +34,10 @@ sub_file(MAN, man)
 
 # 2) gradle: подпись постоянным ключом (иначе каждое обновление APK пришлось бы ставить поверх с потерей данных) и версия
 def gr(s):
-    if 'signingConfig signingConfigs.debug' not in s:
-        s = s.replace('minifyEnabled false', 'minifyEnabled false\n            signingConfig signingConfigs.debug', 1)
+    if 'signingConfigs.chaos' not in s:
+        ks = os.path.abspath('tools/chesschaos.keystore').replace('\\', '/')
+        s = s.replace('buildTypes {', "signingConfigs {\n        chaos {\n            storeFile file('" + ks + "')\n            storeType 'pkcs12'\n            storePassword 'android'\n            keyAlias 'androiddebugkey'\n            keyPassword 'android'\n        }\n    }\n    buildTypes {", 1)
+        s = s.replace('minifyEnabled false', 'minifyEnabled false\n            signingConfig signingConfigs.chaos', 1)
     s = re.sub(r'versionCode\s+\d+', f'versionCode {run}', s, count=1)
     s = re.sub(r'versionName\s+"[^"]*"', f'versionName "1.{run}"', s, count=1)
     return s
