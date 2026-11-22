@@ -28,6 +28,7 @@ alter table public.profiles add column if not exists last_claim timestamptz;
 alter table public.profiles add column if not exists day        date;
 alter table public.profiles add column if not exists day_coins  integer not null default 0;
 alter table public.profiles alter column coins set default 50;
+alter table public.profiles add column if not exists challenge  text not null default 'friends' check (challenge in ('friends','all','none'));
 
 alter table public.profiles enable row level security;
 drop policy if exists "profiles_select_own" on public.profiles;
@@ -156,6 +157,8 @@ create table if not exists public.lobby (
   minutes integer not null default 10,
   updated_at timestamptz not null default now()
 );
+alter table public.lobby add column if not exists side  text not null default 'r' check (side in ('w','b','r'));
+alter table public.lobby add column if not exists queen text not null default 'q';
 alter table public.lobby enable row level security;
 revoke all on public.lobby from anon, authenticated;
 
@@ -163,7 +166,7 @@ revoke all on public.lobby from anon, authenticated;
 create or replace function public.pub_profile(r public.profiles) returns jsonb
 language sql immutable as $$
   select jsonb_build_object('nick', r.nick, 'coins', r.coins, 'owned', to_jsonb(r.owned), 'equip', r.equip, 'equip_q', r.equip_q, 'skin', r.skin,
-    'xp', r.xp, 'wins', r.wins, 'losses', r.losses, 'draws', r.draws, 'games', r.games, 'trophies', r.trophies);
+    'xp', r.xp, 'wins', r.wins, 'losses', r.losses, 'draws', r.draws, 'games', r.games, 'trophies', r.trophies, 'challenge', r.challenge);
 $$;
 
 create or replace function public.ensure_profile(p_nick text) returns jsonb
@@ -358,15 +361,27 @@ end $$;
 -- приглашения в бой
 create or replace function public.send_invite(p_to uuid, p_code text, p_minutes int) returns boolean
 language plpgsql security definer set search_path = public as $$
+declare ch text; fr boolean;
 begin
   if auth.uid() is null then raise exception 'not authenticated'; end if;
   if p_code !~ '^[A-Z0-9]{4,6}$' then raise exception 'bad code'; end if;
-  if not exists (select 1 from public.friends where accepted and ((a = auth.uid() and b = p_to) or (a = p_to and b = auth.uid()))) then
-    raise exception 'Вы не друзья';
-  end if;
+  select challenge into ch from public.profiles where user_id = p_to;
+  if not found then raise exception 'not found'; end if;
+  select exists (select 1 from public.friends where accepted and ((a = auth.uid() and b = p_to) or (a = p_to and b = auth.uid()))) into fr;
+  if ch = 'none' then raise exception 'Игрок не принимает вызовы'; end if;
+  if ch = 'friends' and not fr then raise exception 'Вы не друзья'; end if;
   delete from public.invites where from_uid = auth.uid() and to_uid = p_to;
   delete from public.invites where created_at < now() - interval '10 minutes';
   insert into public.invites (from_uid, to_uid, code, minutes) values (auth.uid(), p_to, p_code, greatest(1, least(60, coalesce(p_minutes, 10))));
+  return true;
+end $$;
+
+create or replace function public.set_challenge(p_mode text) returns boolean
+language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null then raise exception 'not authenticated'; end if;
+  if p_mode not in ('friends','all','none') then raise exception 'bad mode'; end if;
+  update public.profiles set challenge = p_mode where user_id = auth.uid();
   return true;
 end $$;
 
@@ -383,13 +398,15 @@ language sql security definer set search_path = public as $$
 $$;
 
 -- открытые комнаты (поиск соперника)
-create or replace function public.lobby_publish(p_code text, p_minutes int) returns boolean
+drop function if exists public.lobby_publish(text, int);
+create or replace function public.lobby_publish(p_code text, p_minutes int, p_side text default 'r', p_queen text default 'q') returns boolean
 language plpgsql security definer set search_path = public as $$
 begin
   if auth.uid() is null then raise exception 'not authenticated'; end if;
   if p_code !~ '^[A-Z0-9]{4,6}$' then raise exception 'bad code'; end if;
-  insert into public.lobby (user_id, code, minutes, updated_at) values (auth.uid(), p_code, greatest(1, least(60, coalesce(p_minutes, 10))), now())
-    on conflict (user_id) do update set code = excluded.code, minutes = excluded.minutes, updated_at = now();
+  insert into public.lobby (user_id, code, minutes, side, queen, updated_at)
+    values (auth.uid(), p_code, greatest(1, least(60, coalesce(p_minutes, 10))), case when p_side in ('w','b') then p_side else 'r' end, left(coalesce(nullif(p_queen, ''), 'q'), 12), now())
+    on conflict (user_id) do update set code = excluded.code, minutes = excluded.minutes, side = excluded.side, queen = excluded.queen, updated_at = now();
   return true;
 end $$;
 
@@ -400,7 +417,7 @@ $$;
 
 create or replace function public.lobby_list() returns jsonb
 language sql stable security definer set search_path = public as $$
-  select coalesce(jsonb_agg(jsonb_build_object('code', l.code, 'minutes', l.minutes, 'nick', p.nick, 'nick_key', p.nick_key, 'xp', p.xp) order by l.updated_at desc), '[]'::jsonb)
+  select coalesce(jsonb_agg(jsonb_build_object('code', l.code, 'minutes', l.minutes, 'side', l.side, 'queen', l.queen, 'nick', p.nick, 'nick_key', p.nick_key, 'xp', p.xp) order by l.updated_at desc), '[]'::jsonb)
   from (select * from public.lobby where updated_at > now() - interval '50 seconds' and user_id <> auth.uid() order by updated_at desc limit 20) l
   join public.profiles p on p.user_id = l.user_id;
 $$;
@@ -437,7 +454,7 @@ begin
   return jsonb_build_object('uid', r.user_id, 'nick', r.nick, 'xp', r.xp, 'wins', r.wins, 'losses', r.losses, 'draws', r.draws, 'games', r.games,
     'trophies', r.trophies, 'rank', case when r.games > 0 then rk else null end, 'skin', r.skin, 'equip_q', r.equip_q,
     'online', coalesce(r.last_seen > now() - interval '90 seconds', false), 'last_seen', r.last_seen,
-    'since', r.created_at, 'recent', recent, 'relation', fr, 'me', r.user_id = auth.uid());
+    'since', r.created_at, 'recent', recent, 'relation', fr, 'me', r.user_id = auth.uid(), 'challenge', r.challenge);
 end $$;
 
 -- ---------- 7. права на вызов функций ----------
@@ -447,7 +464,7 @@ begin
   for f in
     select p.oid::regprocedure as sig, p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public' and p.proname in ('pub_profile','ensure_profile','heartbeat','shop_catalog','buy_item','claim_game','games_list','game_get',
-      'friend_request','friends_list','friend_respond','friend_remove','send_invite','my_invites','invite_done','lobby_publish','lobby_remove','lobby_list','leaderboard','player_profile')
+      'friend_request','friends_list','friend_respond','friend_remove','send_invite','my_invites','invite_done','lobby_publish','lobby_remove','lobby_list','leaderboard','player_profile','set_challenge')
   loop
     execute format('revoke all on function %s from public, anon, authenticated', f.sig);
     if f.proname <> 'pub_profile' then execute format('grant execute on function %s to authenticated', f.sig); end if;
